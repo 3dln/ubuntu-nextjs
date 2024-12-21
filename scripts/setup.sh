@@ -329,8 +329,7 @@ install_applications() {
         ["2"]="docker.io|Container Runtime"
         ["3"]="postgresql|Database Server"
         ["4"]="redis-server|Cache Server"
-        ["5"]="nodejs|Node.js Runtime"
-        ["6"]="python3|Python Runtime"
+        ["5"]="python3|Python Runtime"
     )
     
     while true; do
@@ -383,6 +382,132 @@ install_applications() {
                 ;;
         esac
     done
+}
+
+check_nvm() {
+    local status="[ ]"
+    local details=""
+
+    if [ -d "$HOME/.nvm" ]; then
+        # Source NVM if it exists
+        [ -s "$HOME/.nvm/nvm.sh" ] && \. "$HOME/.nvm/nvm.sh"
+        
+        if command -v nvm >/dev/null; then
+            status="[✓]"
+            local node_version=$(node -v 2>/dev/null || echo "none")
+            local npm_version=$(npm -v 2>/dev/null || echo "none")
+            details=" (Node ${node_version}, npm ${npm_version})"
+        else
+            status="[!]"
+            details=" (NVM installed but not loaded)"
+        fi
+    else
+        details=" (NVM not installed)"
+    fi
+
+    echo "${status} Node.js (NVM)${details}"
+}
+
+# Function to check PM2 installation
+check_pm2() {
+    local status="[ ]"
+    local details=""
+
+    if command -v pm2 >/dev/null; then
+        status="[✓]"
+        local pm2_version=$(pm2 -v 2>/dev/null || echo "unknown")
+        details=" (Version: ${pm2_version})"
+        
+        # Check if PM2 startup is configured
+        if systemctl list-unit-files | grep -q "pm2-"; then
+            details+=" [Startup configured]"
+        fi
+    else
+        details=" (PM2 not installed)"
+    fi
+
+    echo "${status} PM2${details}"
+}
+
+# Function to install NVM and Node.js
+install_nvm() {
+    log_message "Installing NVM and Node.js..."
+    
+    # Install dependencies
+    apt-get install -y curl git
+
+    # Download and run the NVM installation script for root
+    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
+    
+    # Source NVM
+    export NVM_DIR="$HOME/.nvm"
+    [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+    
+    # Add NVM to root's bash profile
+    echo 'export NVM_DIR="$HOME/.nvm"' >> "$HOME/.bashrc"
+    echo '[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"  # This loads nvm' >> "$HOME/.bashrc"
+    
+    # Install latest LTS version of Node.js
+    nvm install --lts
+    nvm use --lts
+    
+    # Set default Node.js version
+    nvm alias default 'lts/*'
+    
+    # Create a system-wide node command
+    ln -sf "$NVM_DIR/versions/node/$(nvm version)/bin/node" /usr/local/bin/node
+    ln -sf "$NVM_DIR/versions/node/$(nvm version)/bin/npm" /usr/local/bin/npm
+    
+    log_message "NVM and Node.js installation completed"
+    echo -e "${INFO} NVM $(nvm --version) installed"
+    echo -e "${INFO} Node.js $(node -v) installed"
+    echo -e "${INFO} npm $(npm -v) installed"
+}
+
+# Function to install and configure PM2
+install_pm2() {
+    log_message "Installing and configuring PM2..."
+    
+    # Check if Node.js is installed
+    if ! command -v node >/dev/null; then
+        echo -e "${ERROR} Node.js is required for PM2. Please install Node.js first."
+        return 1
+    fi
+    
+    # Install PM2 globally
+    npm install -g pm2
+    
+    # Create directory for Node.js applications
+    mkdir -p /var/www/nodejs
+    chown -R www-data:www-data /var/www/nodejs
+    
+    # Setup PM2 to start on boot with the www-data user
+    pm2 startup systemd -u www-data --hp /var/www/nodejs
+    
+    # Create PM2 ecosystem file
+    cat > /var/www/nodejs/ecosystem.config.js <<EOL
+module.exports = {
+  apps: [{
+    name: 'app',
+    script: 'npm',
+    args: 'start',
+    cwd: '/var/www/nodejs/current',
+    watch: false,
+    max_memory_restart: '1G',
+    env: {
+      NODE_ENV: 'production'
+    }
+  }]
+};
+EOL
+    
+    # Set proper ownership
+    chown www-data:www-data /var/www/nodejs/ecosystem.config.js
+    
+    log_message "PM2 installation completed"
+    echo -e "${INFO} PM2 $(pm2 -v) installed and configured"
+    echo -e "${INFO} PM2 startup configured for www-data user"
+    echo -e "${INFO} Default ecosystem file created at /var/www/nodejs/ecosystem.config.js"
 }
 
 # Function to check PostgreSQL configuration
@@ -818,6 +943,8 @@ show_menu() {
     check_dns_config
     check_postgres_config
     check_redis_config
+    check_nvm
+    check_pm2
 
     echo ""
     echo "Select options to configure:"
@@ -829,11 +956,13 @@ show_menu() {
     echo "5) Configure DNS"
     echo "6) Configure PostgreSQL"
     echo "7) Configure Redis"
-    echo "8) Run All Checks"
-    echo "9) Configure All"
+    echo "8) Install Node.js (using NVM)"
+    echo "9) Install & Configure PM2"
+    echo "10) Run All Checks"
+    echo "11) Configure All"
     echo "q) Quit"
     
-    read -r -p "Enter selection [1-9 or q]: " selection
+    read -r -p "Enter selection [1-11 or q]: " selection
     echo "You selected: $selection"
     
     # Add debug output
@@ -858,18 +987,18 @@ show_menu() {
             configure_dns
             ;;
         6)
-            echo "Configuring PostgreSQL..."
             configure_postgres
-            echo "Press enter to continue..."
-            read -r
             ;;
         7)
-            echo "Configuring Redis..."
             configure_redis
-            echo "Press enter to continue..."
-            read -r
             ;;
         8)
+            install_nvm
+            ;;
+        9)
+            install_pm2
+            ;;
+        10)
             check_ssh_config
             check_firewall
             check_fail2ban
@@ -879,9 +1008,11 @@ show_menu() {
             check_dns_config
             check_postgres_config
             check_redis_config
+            check_nvm
+            check_pm2
             read -p "Press enter to continue..."
             ;;
-        9)
+        11)
             configure_ssh
             configure_firewall
             configure_fail2ban
@@ -891,6 +1022,8 @@ show_menu() {
             configure_dns
             configure_postgres
             configure_redis
+            install_nvm
+            install_pm2
             ;;
         q)
             exit 0
