@@ -46,7 +46,7 @@ create_admin_user() {
     if id "$admin_user" &>/dev/null; then
         echo -e "${ERROR} User $admin_user already exists"
         return 1
-    }
+    fi
     
     # Create user with home directory
     useradd -m -s /bin/bash "$admin_user"
@@ -93,7 +93,7 @@ setup_ssh_keys() {
     if ! id "$ssh_user" &>/dev/null; then
         echo -e "${ERROR} User $ssh_user does not exist"
         return 1
-    }
+    fi
     
     # Get the SSH public key
     echo "Please paste your SSH public key (ssh-rsa or ssh-ed25519 format):"
@@ -103,7 +103,7 @@ setup_ssh_keys() {
     if [[ ! $ssh_key =~ ^(ssh-rsa|ssh-ed25519) ]]; then
         echo -e "${ERROR} Invalid SSH key format"
         return 1
-    }
+    fi
     
     # Ensure .ssh directory exists
     user_home=$(eval echo ~$ssh_user)
@@ -133,7 +133,7 @@ verify_ssh_access() {
     if [[ ! $ssh_test_result =~ ^[Yy][Ee]?[Ss]?$ ]]; then
         echo -e "${ERROR} SSH verification failed. Please check your configuration"
         return 1
-    }
+    fi
     
     return 0
 }
@@ -349,21 +349,21 @@ configure_ssh() {
         if [ $? -ne 0 ]; then
             echo -e "${ERROR} Failed to create admin user. Aborting SSH configuration"
             return 1
-        }
+        fi
         
         # Setup SSH keys for new admin user
         setup_ssh_keys
         if [ $? -ne 0 ]; then
             echo -e "${ERROR} Failed to setup SSH keys. Aborting SSH configuration"
             return 1
-        }
+        fi
         
         # Verify SSH access before proceeding
         verify_ssh_access "$admin_user"
         if [ $? -ne 0 ]; then
             echo -e "${ERROR} SSH verification failed. Aborting remaining configuration"
             return 1
-        }
+        fi
     fi
     
     # Backup original config
