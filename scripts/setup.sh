@@ -35,6 +35,109 @@ check_root() {
     fi
 }
 
+# Function to create new admin user
+create_admin_user() {
+    log_message "Setting up admin user..."
+    
+    # Prompt for username
+    read -p "Enter new admin username: " admin_user
+    
+    # Check if user already exists
+    if id "$admin_user" &>/dev/null; then
+        echo -e "${ERROR} User $admin_user already exists"
+        return 1
+    }
+    
+    # Create user with home directory
+    useradd -m -s /bin/bash "$admin_user"
+    
+    # Generate a secure password
+    admin_pass=$(openssl rand -base64 12)
+    
+    # Set the password
+    echo "$admin_user:$admin_pass" | chpasswd
+    
+    # Add user to sudo group
+    usermod -aG sudo "$admin_user"
+    
+    # Save credentials securely
+    echo "Admin User Credentials:" > /root/.admin_credentials
+    echo "Username: $admin_user" >> /root/.admin_credentials
+    echo "Password: $admin_pass" >> /root/.admin_credentials
+    chmod 600 /root/.admin_credentials
+    
+    # Create .ssh directory for new user
+    mkdir -p "/home/$admin_user/.ssh"
+    chmod 700 "/home/$admin_user/.ssh"
+    touch "/home/$admin_user/.ssh/authorized_keys"
+    chmod 600 "/home/$admin_user/.ssh/authorized_keys"
+    chown -R "$admin_user:$admin_user" "/home/$admin_user/.ssh"
+    
+    log_message "Admin user $admin_user created successfully"
+    echo -e "${INFO} Admin user credentials saved to /root/.admin_credentials"
+    echo -e "${INFO} Please save these credentials NOW:"
+    echo -e "Username: $admin_user"
+    echo -e "Password: $admin_pass"
+    echo -e "${WARN} After setting up SSH keys, you'll need to use these credentials for sudo access"
+}
+
+
+# Function to setup SSH keys
+setup_ssh_keys() {
+    log_message "Setting up SSH key authentication..."
+    
+    # Get username
+    read -p "Enter the username to setup SSH keys for: " ssh_user
+    
+    # Verify user exists
+    if ! id "$ssh_user" &>/dev/null; then
+        echo -e "${ERROR} User $ssh_user does not exist"
+        return 1
+    }
+    
+    # Get the SSH public key
+    echo "Please paste your SSH public key (ssh-rsa or ssh-ed25519 format):"
+    read -r ssh_key
+    
+    # Validate SSH key format
+    if [[ ! $ssh_key =~ ^(ssh-rsa|ssh-ed25519) ]]; then
+        echo -e "${ERROR} Invalid SSH key format"
+        return 1
+    }
+    
+    # Ensure .ssh directory exists
+    user_home=$(eval echo ~$ssh_user)
+    mkdir -p "$user_home/.ssh"
+    chmod 700 "$user_home/.ssh"
+    
+    # Add the SSH key
+    echo "$ssh_key" >> "$user_home/.ssh/authorized_keys"
+    chmod 600 "$user_home/.ssh/authorized_keys"
+    chown -R "$ssh_user:$ssh_user" "$user_home/.ssh"
+    
+    log_message "SSH key added for user $ssh_user"
+    echo -e "${INFO} SSH key authentication configured for $ssh_user"
+}
+
+# Function to verify SSH access
+verify_ssh_access() {
+    local test_user=$1
+    local current_port=$(grep "^Port" /etc/ssh/sshd_config | awk '{print $2}')
+    
+    echo -e "${INFO} Please test SSH access with:"
+    echo "ssh -p ${current_port:-22} $test_user@$(curl -s ifconfig.me)"
+    echo -e "${WARN} DO NOT CONTINUE until you've verified SSH access in a new terminal"
+    echo -e "${WARN} Are you able to connect via SSH in a new terminal? (yes/no)"
+    read -r ssh_test_result
+    
+    if [[ ! $ssh_test_result =~ ^[Yy][Ee]?[Ss]?$ ]]; then
+        echo -e "${ERROR} SSH verification failed. Please check your configuration"
+        return 1
+    }
+    
+    return 0
+}
+
 # Function to check DNS configuration
 check_dns_config() {
     local status="[ ]"
@@ -239,8 +342,32 @@ check_monitoring() {
 configure_ssh() {
     log_message "Configuring SSH..."
     
+    # If root is running the script and no other admin user exists
+    if [ "$EUID" -eq 0 ] && [ -z "$(grep sudo /etc/group | cut -d: -f4)" ]; then
+        echo -e "${WARN} Running as root with no other admin users. Creating admin user first..."
+        create_admin_user
+        if [ $? -ne 0 ]; then
+            echo -e "${ERROR} Failed to create admin user. Aborting SSH configuration"
+            return 1
+        }
+        
+        # Setup SSH keys for new admin user
+        setup_ssh_keys
+        if [ $? -ne 0 ]; then
+            echo -e "${ERROR} Failed to setup SSH keys. Aborting SSH configuration"
+            return 1
+        }
+        
+        # Verify SSH access before proceeding
+        verify_ssh_access "$admin_user"
+        if [ $? -ne 0 ]; then
+            echo -e "${ERROR} SSH verification failed. Aborting remaining configuration"
+            return 1
+        }
+    fi
+    
     # Backup original config
-    cp /etc/ssh/sshd_config /etc/ssh/sshd_config.backup."$TIMESTAMP"
+    cp /etc/ssh/sshd_config "/etc/ssh/sshd_config.backup.$TIMESTAMP"
     
     # Set secure SSH configuration
     {
@@ -251,10 +378,20 @@ configure_ssh() {
         echo "MaxAuthTries 3"
         echo "PubkeyAuthentication yes"
         echo "Protocol 2"
-    } >> /etc/ssh/sshd_config
-
+        echo "AllowUsers $admin_user" # Only allow the admin user
+    } > /etc/ssh/sshd_config
+    
     systemctl restart sshd
     log_message "SSH configured successfully"
+    
+    echo -e "${INFO} SSH has been configured with the following settings:"
+    echo -e "- Port: 2222"
+    echo -e "- Root login disabled"
+    echo -e "- Password authentication disabled"
+    echo -e "- Only key-based authentication allowed"
+    echo -e "- Only $admin_user can SSH"
+    echo -e "\n${WARN} Make sure to save the following SSH command for future access:"
+    echo -e "ssh -p 2222 $admin_user@$(curl -s ifconfig.me)"
 }
 
 # Function to configure firewall
