@@ -341,6 +341,12 @@ check_monitoring() {
 # Function to configure SSH
 configure_ssh() {
     log_message "Configuring SSH..."
+
+    # Ensure openssh-server is installed
+    if ! dpkg -l | grep -q openssh-server; then
+        echo -e "${INFO} Installing openssh-server..."
+        apt-get install -y openssh-server
+    fi
     
     # If root is running the script and no other admin user exists
     if [ "$EUID" -eq 0 ] && [ -z "$(grep sudo /etc/group | cut -d: -f4)" ]; then
